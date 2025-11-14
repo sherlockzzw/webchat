@@ -297,16 +297,34 @@ export default {
 
 		handleWebSocketMessage(data) {
 			console.log('chat-detail.vue: 收到WebSocket消息', data)
-			const userInfo = this.userInfo
+			
+			// 确保用户信息存在，如果不存在则从本地存储重新加载
+			let userInfo = this.userInfo
 			if (!userInfo || !userInfo.id) {
-				console.log('chat-detail.vue: 用户信息不存在，忽略消息')
-				return
+				console.log('chat-detail.vue: 用户信息不存在，尝试从本地存储加载')
+				userInfo = uni.getStorageSync('userInfo') || {}
+				if (userInfo && userInfo.id) {
+					this.userInfo = userInfo
+					console.log('chat-detail.vue: 用户信息已从本地存储加载', userInfo)
+				} else {
+					console.log('chat-detail.vue: 本地存储中也没有用户信息，忽略消息')
+					return
+				}
 			}
 
-			const currentUserId = Number(userInfo.id)
-			const currentFriendId = Number(this.friendId)
+			const currentUserId = Number(userInfo.id || this.userInfo.id || 0)
+			const currentFriendId = Number(this.friendId || 0)
 			const fromUserId = Number(data.from_user_id ?? data.fromUserId ?? 0)
 			const toUserId = Number(data.to_user_id ?? data.toUserId ?? 0)
+			
+			// 如果用户ID仍然无效，忽略消息
+			if (!currentUserId || !currentFriendId) {
+				console.log('chat-detail.vue: 用户ID或好友ID无效，忽略消息', {
+					currentUserId,
+					currentFriendId
+				})
+				return
+			}
 
 			console.log('chat-detail.vue: 消息匹配检查', {
 				currentUserId,

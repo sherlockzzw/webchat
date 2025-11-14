@@ -3,7 +3,7 @@
 		<!-- 用户信息卡片 -->
 		<view class="user-card">
 			<view class="user-avatar">
-				<image :src="friendInfo.avatar || '/static/logo.png'" class="avatar-img"></image>
+				<image :src="getAvatarUrl(friendInfo.avatar)" class="avatar-img" @error="handleAvatarError"></image>
 				<view v-if="friendInfo.is_online" class="online-indicator"></view>
 			</view>
 			<view class="user-info">
@@ -79,11 +79,44 @@ export default {
 				const friendApi = await import('@/api/friend.js')
 				const response = await friendApi.default.getFriendDetail(this.friendId)
 				
+				console.log('获取好友详情响应:', response)
+				
 				if (response.success) {
-					this.friendInfo = response.data
+					// 后端返回的数据结构是 { friend: {...}, success: true, message: "..." }
+					// 需要访问 response.data.friend
+					const friendData = response.data?.friend || response.data
+					
+					if (friendData) {
+						// 处理时间戳（可能是protobuf Timestamp对象）
+						let createdAt = friendData.created_at || friendData.CreatedAt
+						if (createdAt && typeof createdAt === 'object' && createdAt.seconds) {
+							// protobuf Timestamp格式：{ seconds: number, nanos: number }
+							createdAt = createdAt.seconds * 1000 + Math.floor((createdAt.nanos || 0) / 1e6)
+						}
+						
+						this.friendInfo = {
+							id: friendData.id || friendData.Id || friendData.ID,
+							name: friendData.name || friendData.Name || friendData.remark || friendData.Remark || '未知用户',
+							phone: friendData.phone || friendData.Phone || '',
+							email: friendData.email || friendData.Email || '',
+							avatar: friendData.avatar || friendData.Avatar || '',
+							is_online: friendData.is_online || friendData.IsOnline || false,
+							remark: friendData.remark || friendData.Remark || '',
+							is_blocked: friendData.is_blocked || friendData.IsBlocked || false,
+							created_at: createdAt || '',
+							device_info: friendData.device_info || friendData.DeviceInfo || ''
+						}
+						console.log('好友信息已加载:', this.friendInfo)
+					} else {
+						console.error('好友数据为空:', response.data)
+						uni.showToast({
+							title: '好友信息不存在',
+							icon: 'none'
+						})
+					}
 				} else {
 					uni.showToast({
-						title: response.message || '加载失败',
+						title: response.message || response.msg || '加载失败',
 						icon: 'none'
 					})
 				}
@@ -218,8 +251,53 @@ export default {
 		formatTime(timestamp) {
 			if (!timestamp) return '未知'
 			
-			const date = new Date(timestamp)
+			// 处理时间戳（可能是秒或毫秒）
+			let time = timestamp
+			if (typeof timestamp === 'number' && timestamp < 1e12) {
+				time = timestamp * 1000
+			}
+			
+			const date = new Date(time)
+			if (isNaN(date.getTime())) {
+				return '未知'
+			}
 			return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`
+		},
+
+		// 获取头像URL
+		getAvatarUrl(avatar) {
+			if (!avatar || avatar === '') {
+				return '/static/logo.png'
+			}
+			
+			// 如果已经是完整URL，直接返回
+			if (avatar.startsWith('http://') || avatar.startsWith('https://')) {
+				return avatar
+			}
+			
+			// 如果是data URI，直接返回
+			if (avatar.startsWith('data:')) {
+				return avatar
+			}
+			
+			// 如果是相对路径，拼接完整URL
+			const { API_CONFIG } = require('@/api/config.js')
+			
+			// 如果路径以/开头，直接拼接
+			if (avatar.startsWith('/')) {
+				return `${API_CONFIG.BASE_URL}${avatar}`
+			}
+			
+			// 如果路径不以/开头，可能是文件名
+			if (avatar.includes('upload') || avatar.includes('image')) {
+				return `${API_CONFIG.BASE_URL}/static/upload/${avatar}`
+			}
+			return `${API_CONFIG.BASE_URL}/static/avatar/${avatar}`
+		},
+
+		// 处理头像加载错误
+		handleAvatarError(e) {
+			console.error('头像加载失败:', e)
 		}
 	}
 }
