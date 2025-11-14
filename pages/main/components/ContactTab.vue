@@ -15,7 +15,7 @@
 		
 		<!-- 功能入口区域 -->
 		<view class="function-section">
-			<view class="function-item" @click="addFriend">
+			<view class="function-item" @click="friendRequests">
 				<view class="function-icon">
 					<uni-icons type="person-add" size="28" color="#07c160"></uni-icons>
 				</view>

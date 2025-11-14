@@ -24,12 +24,34 @@ class ChatApi {
   // 发送消息
   async sendMessage(messageData) {
     try {
+      // 确保 to_user_id 是数字类型
+      const toUserId = Number(messageData.toUserId)
+      if (isNaN(toUserId)) {
+        return {
+          success: false,
+          message: '无效的接收者ID'
+        }
+      }
+
+      // 处理消息类型：如果是字符串，转换为对应的数字
+      let messageType = messageData.messageType
+      if (typeof messageType === 'string') {
+        const typeMap = {
+          'text': 0,
+          'image': 1,
+          'file': 2,
+          'system': 3
+        }
+        messageType = typeMap[messageType.toLowerCase()] || 0
+      }
+
       const response = await apiRequest.post(API_CONFIG.ENDPOINTS.SEND_MESSAGE, {
-        to_user_id: messageData.toUserId,
-        message_type: messageData.messageType || 'text',
-        content: messageData.content,
+        to_user_id: toUserId,
+        message_type: messageType,
+        content: messageData.content || '',
         file_url: messageData.fileUrl || '',
-        file_name: messageData.fileName || ''
+        file_name: messageData.fileName || '',
+        file_size: messageData.fileSize || 0
       })
       return response
     } catch (error) {
@@ -42,10 +64,10 @@ class ChatApi {
   }
 
   // 获取消息历史
-  async getMessageHistory(toUserId, page = 1, pageSize = 50) {
+  async getMessageHistory(otherUserId, page = 1, pageSize = 50) {
     try {
       const response = await apiRequest.get(API_CONFIG.ENDPOINTS.MESSAGE_HISTORY, {
-        to_user_id: toUserId,
+        other_user_id: parseInt(otherUserId),
         page: page,
         page_size: pageSize
       })
@@ -117,7 +139,7 @@ class ChatApi {
         })
       })
 
-      if (uploadResult.code === 0) {
+      if (uploadResult.code === 200) {
         return {
           success: true,
           data: uploadResult.data,
@@ -126,7 +148,7 @@ class ChatApi {
       } else {
         return {
           success: false,
-          message: uploadResult.message || '上传失败'
+          message: uploadResult.msg || '上传失败'
         }
       }
     } catch (error) {

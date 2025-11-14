@@ -136,6 +136,26 @@ class UserApi {
   updateUserInfo(userInfo) {
     uni.setStorageSync('userInfo', userInfo)
   }
+
+  // 更新用户资料
+  async updateProfile(profileData) {
+    try {
+      const response = await apiRequest.post(API_CONFIG.ENDPOINTS.UPDATE_PROFILE, {
+        name: profileData.name,
+        phone: profileData.phone,
+        email: profileData.email,
+        avatar: profileData.avatar,
+        signature: profileData.signature
+      })
+      return response
+    } catch (error) {
+      console.error('更新用户资料API调用失败:', error)
+      return {
+        success: false,
+        message: '更新用户资料失败'
+      }
+    }
+  }
 }
 
 // 创建实例

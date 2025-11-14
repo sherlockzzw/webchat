@@ -14,7 +14,7 @@
 		<view class="content">
 			<!-- 聊天页面 -->
 			<view v-if="currentTab === 0" class="tab-content">
-				<ChatTab />
+				<ChatTab ref="chatTab" />
 			</view>
 			
 			<!-- 通讯录页面 -->
@@ -113,6 +113,15 @@ export default {
 		switchTab(index) {
 			console.log('Main: 切换到tab', index)
 			this.currentTab = index
+			
+			// 当切换到聊天时，触发数据加载
+			if (index === 0) {
+				this.$nextTick(() => {
+					if (this.$refs.chatTab) {
+						this.$refs.chatTab.loadChats()
+					}
+				})
+			}
 			
 			// 当切换到通讯录时，触发数据加载
 			if (index === 1) {

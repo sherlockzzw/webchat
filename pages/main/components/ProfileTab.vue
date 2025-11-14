@@ -142,26 +142,15 @@ export default {
 		},
 		
 		changeAvatar() {
-			uni.chooseImage({
-				count: 1,
-				sizeType: ['compressed'],
-				sourceType: ['album', 'camera'],
-				success: (res) => {
-					const tempFilePath = res.tempFilePaths[0]
-					// 这里可以上传头像到服务器
-					uni.showToast({
-						title: '头像上传功能开发中',
-						icon: 'none'
-					})
-				}
+			// 跳转到编辑资料页面，自动触发头像选择
+			uni.navigateTo({
+				url: '/pages/user/edit-profile'
 			})
 		},
 		
 		editProfile() {
-			uni.showModal({
-				title: '编辑资料',
-				content: '编辑资料功能开发中',
-				showCancel: false
+			uni.navigateTo({
+				url: '/pages/user/edit-profile'
 			})
 		},
 		

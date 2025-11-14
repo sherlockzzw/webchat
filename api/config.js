@@ -10,6 +10,7 @@ export const API_CONFIG = {
     LOGIN: '/api/login',
     REGISTER: '/api/user/register',
     USER_INFO: '/api/user/info',
+    UPDATE_PROFILE: '/api/user/profile',
     
     // 聊天相关
     SEARCH_USER: '/api/chat/search',

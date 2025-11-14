@@ -52,33 +52,8 @@ export default {
 	data() {
 		return {
 			searchKeyword: '',
-			chats: [
-				// 模拟聊天数据
-				{
-					id: 1,
-					name: '张三',
-					avatar: '/static/avatar1.png',
-					lastMessage: '你好，最近怎么样？',
-					lastMessageTime: Date.now() - 1000 * 60 * 30, // 30分钟前
-					unreadCount: 2
-				},
-				{
-					id: 2,
-					name: '李四',
-					avatar: '/static/avatar2.png',
-					lastMessage: '好的，明天见',
-					lastMessageTime: Date.now() - 1000 * 60 * 60 * 2, // 2小时前
-					unreadCount: 0
-				},
-				{
-					id: 3,
-					name: '王五',
-					avatar: '/static/avatar3.png',
-					lastMessage: '谢谢你的帮助',
-					lastMessageTime: Date.now() - 1000 * 60 * 60 * 24, // 1天前
-					unreadCount: 1
-				}
-			]
+			chats: [],
+			isLoading: false
 		}
 	},
 	computed: {
@@ -88,11 +63,144 @@ export default {
 			}
 			return this.chats.filter(chat => 
 				chat.name.toLowerCase().includes(this.searchKeyword.toLowerCase()) ||
-				chat.lastMessage.toLowerCase().includes(this.searchKeyword.toLowerCase())
+				(chat.lastMessage && chat.lastMessage.toLowerCase().includes(this.searchKeyword.toLowerCase()))
 			)
 		}
 	},
+	mounted() {
+		this.loadChats()
+		this.setupWebSocketListener()
+	},
+	beforeUnmount() {
+		uni.$off('ws:message', this.handleWebSocketMessage)
+	},
 	methods: {
+		normalizeTimestamp(value) {
+			if (!value) return Date.now()
+			if (typeof value === 'number') {
+				return value > 1e12 ? value : value * 1000
+			}
+			if (typeof value === 'string') {
+				const parsed = Date.parse(value)
+				return isNaN(parsed) ? Date.now() : parsed
+			}
+			if (typeof value === 'object' && value !== null) {
+				if (value.seconds) {
+					return value.seconds * 1000 + Math.floor((value.nanos || 0) / 1e6)
+				}
+			}
+			return Date.now()
+		},
+
+		async loadChats() {
+			if (this.isLoading) return
+			this.isLoading = true
+
+			try {
+				const friendApi = await import('@/api/friend.js')
+				const chatApi = await import('@/api/chat.js')
+
+				// 获取好友列表
+				const friendResponse = await friendApi.default.getFriendList(1, 100)
+				if (!friendResponse.success || !friendResponse.data || !friendResponse.data.friends) {
+					this.chats = []
+					this.isLoading = false
+					return
+				}
+
+				const friends = friendResponse.data.friends || []
+
+				// 获取未读消息数量
+				const unreadResponse = await chatApi.default.getUnreadCount()
+				const unreadByUser = unreadResponse.success && unreadResponse.data ? (unreadResponse.data.unread_by_user || {}) : {}
+
+				// 为每个好友获取最后一条消息
+				const chatPromises = friends.map(async (friend) => {
+					const friendId = friend.id || friend.friend_id
+					try {
+						const historyResponse = await chatApi.default.getMessageHistory(friendId, 1, 1)
+						let lastMessage = ''
+						let lastMessageTime = Date.now()
+
+						if (historyResponse.success && historyResponse.data) {
+							const messages = historyResponse.data.messages || historyResponse.data.Messages || []
+							if (messages.length > 0) {
+								const msg = messages[messages.length - 1]
+								lastMessage = msg.content || ''
+								lastMessageTime = this.normalizeTimestamp(msg.created_at)
+							}
+						}
+
+						return {
+							id: friendId,
+							name: friend.remark || friend.name || '未知',
+							avatar: friend.avatar || friend.friend_avatar || '/static/default-avatar.png',
+							lastMessage: lastMessage,
+							lastMessageTime: lastMessageTime,
+							unreadCount: unreadByUser[friendId] || 0
+						}
+					} catch (error) {
+						console.error(`获取好友 ${friendId} 的消息历史失败:`, error)
+						return {
+							id: friendId,
+							name: friend.remark || friend.name || '未知',
+							avatar: friend.avatar || friend.friend_avatar || '/static/default-avatar.png',
+							lastMessage: '',
+							lastMessageTime: Date.now(),
+							unreadCount: unreadByUser[friendId] || 0
+						}
+					}
+				})
+
+				const chatList = await Promise.all(chatPromises)
+				chatList.sort((a, b) => b.lastMessageTime - a.lastMessageTime)
+				this.chats = chatList
+			} catch (error) {
+				console.error('加载聊天列表失败:', error)
+				uni.showToast({
+					title: '加载失败，请重试',
+					icon: 'none'
+				})
+			} finally {
+				this.isLoading = false
+			}
+		},
+
+		setupWebSocketListener() {
+			uni.$on('ws:message', this.handleWebSocketMessage)
+		},
+
+		handleWebSocketMessage(data) {
+			const userInfo = uni.getStorageSync('userInfo')
+			if (!userInfo || !userInfo.id) {
+				return
+			}
+
+			const currentUserId = Number(userInfo.id)
+			const fromUserId = Number(data.from_user_id ?? data.fromUserId)
+			const toUserId = Number(data.to_user_id ?? data.toUserId)
+
+			// 判断是否是发给当前用户的消息
+			if (toUserId === currentUserId) {
+				// 找到对应的聊天项并更新
+				const friendId = fromUserId
+				const chatIndex = this.chats.findIndex(chat => Number(chat.id) === friendId)
+
+				if (chatIndex >= 0) {
+					// 更新最后一条消息
+					this.chats[chatIndex].lastMessage = data.content || ''
+					this.chats[chatIndex].lastMessageTime = this.normalizeTimestamp(data.created_at)
+					// 增加未读数量
+					this.chats[chatIndex].unreadCount = (this.chats[chatIndex].unreadCount || 0) + 1
+					// 重新排序
+					this.chats.sort((a, b) => b.lastMessageTime - a.lastMessageTime)
+				} else {
+					// 如果是新好友，重新加载列表
+					this.loadChats()
+				}
+			}
+		},
+
 		onSearch() {
 			// 搜索功能
 		},
@@ -100,13 +208,14 @@ export default {
 		openChat(chat) {
 			// 跳转到聊天详情页
 			uni.navigateTo({
-				url: `/pages/chat/chat-detail?chatId=${chat.id}&name=${chat.name}`
+				url: `/pages/chat/chat-detail?friendId=${chat.id}&friendName=${chat.name}`
 			})
 		},
 		
 		formatTime(timestamp) {
+			const time = this.normalizeTimestamp(timestamp)
 			const now = Date.now()
-			const diff = now - timestamp
+			const diff = now - time
 			
 			if (diff < 1000 * 60) {
 				return '刚刚'
@@ -115,7 +224,7 @@ export default {
 			} else if (diff < 1000 * 60 * 60 * 24) {
 				return Math.floor(diff / (1000 * 60 * 60)) + '小时前'
 			} else {
-				const date = new Date(timestamp)
+				const date = new Date(time)
 				return `${date.getMonth() + 1}/${date.getDate()}`
 			}
 		}

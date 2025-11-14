@@ -64,18 +64,32 @@ export default {
 				const friendApi = await import('@/api/friend.js')
 				const response = await friendApi.default.getFriendRequests()
 				
+				console.log('好友申请API响应:', response)
+				console.log('响应数据:', JSON.stringify(response, null, 2))
+				
 				if (response.success) {
+					// 检查数据结构
+					const requests = response.data?.requests || response.data?.Requests || []
+					console.log('提取的申请列表:', requests)
+					console.log('申请数量:', requests.length)
+					
 					// 映射后端字段到前端期望的字段
-					this.friendRequests = (response.data.requests || []).map(request => ({
-						id: request.id,
-						name: request.from_user_name || '未知用户',
-						avatar: request.from_user_avatar || '/static/logo.png',
-						message: request.message || '请求添加您为好友',
-						created_at: request.created_at,
-						status: request.status,
-						processing: false
-					}))
+					this.friendRequests = requests.map(request => {
+						console.log('处理申请项:', request)
+						return {
+							id: request.id || request.Id,
+							name: request.from_user_name || request.FromUserName || '未知用户',
+							avatar: request.from_user_avatar || request.FromUserAvatar || '/static/logo.png',
+							message: request.message || request.Message || '请求添加您为好友',
+							created_at: request.created_at || request.CreatedAt,
+							status: request.status || request.Status,
+							processing: false
+						}
+					})
+					
+					console.log('映射后的申请列表:', this.friendRequests)
 				} else {
+					console.error('API返回失败:', response.message)
 					uni.showToast({
 						title: response.message || '加载失败',
 						icon: 'none'
