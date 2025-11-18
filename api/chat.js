@@ -21,18 +21,9 @@ class ChatApi {
     }
   }
 
-  // 发送消息
+  // 发送消息（支持私聊和群聊）
   async sendMessage(messageData) {
     try {
-      // 确保 to_user_id 是数字类型
-      const toUserId = Number(messageData.toUserId)
-      if (isNaN(toUserId)) {
-        return {
-          success: false,
-          message: '无效的接收者ID'
-        }
-      }
-
       // 处理消息类型：如果是字符串，转换为对应的数字
       let messageType = messageData.messageType
       if (typeof messageType === 'string') {
@@ -45,14 +36,42 @@ class ChatApi {
         messageType = typeMap[messageType.toLowerCase()] || 0
       }
 
-      const response = await apiRequest.post(API_CONFIG.ENDPOINTS.SEND_MESSAGE, {
-        to_user_id: toUserId,
+      // 构建请求数据
+      const requestData = {
         message_type: messageType,
         content: messageData.content || '',
         file_url: messageData.fileUrl || '',
         file_name: messageData.fileName || '',
         file_size: messageData.fileSize || 0
-      })
+      }
+
+      // 支持私聊和群聊
+      if (messageData.groupId) {
+        // 群聊
+        requestData.group_id = Number(messageData.groupId)
+        if (isNaN(requestData.group_id)) {
+          return {
+            success: false,
+            message: '无效的群组ID'
+          }
+        }
+      } else if (messageData.toUserId) {
+        // 私聊
+        requestData.to_user_id = Number(messageData.toUserId)
+        if (isNaN(requestData.to_user_id)) {
+          return {
+            success: false,
+            message: '无效的接收者ID'
+          }
+        }
+      } else {
+        return {
+          success: false,
+          message: '请指定接收者或群组'
+        }
+      }
+
+      const response = await apiRequest.post(API_CONFIG.ENDPOINTS.SEND_MESSAGE, requestData)
       return response
     } catch (error) {
       console.error('发送消息API调用失败:', error)
@@ -63,14 +82,29 @@ class ChatApi {
     }
   }
 
-  // 获取消息历史
-  async getMessageHistory(otherUserId, page = 1, pageSize = 50) {
+  // 获取消息历史（支持私聊和群聊）
+  async getMessageHistory(params) {
     try {
-      const response = await apiRequest.get(API_CONFIG.ENDPOINTS.MESSAGE_HISTORY, {
-        other_user_id: parseInt(otherUserId),
-        page: page,
-        page_size: pageSize
-      })
+      const requestParams = {
+        page: params.page || 1,
+        page_size: params.pageSize || 50
+      }
+
+      // 支持私聊和群聊
+      if (params.groupId) {
+        // 群聊
+        requestParams.group_id = parseInt(params.groupId)
+      } else if (params.otherUserId) {
+        // 私聊
+        requestParams.other_user_id = parseInt(params.otherUserId)
+      } else {
+        return {
+          success: false,
+          message: '请指定对方用户ID或群组ID'
+        }
+      }
+
+      const response = await apiRequest.get(API_CONFIG.ENDPOINTS.MESSAGE_HISTORY, requestParams)
       return response
     } catch (error) {
       console.error('获取消息历史API调用失败:', error)

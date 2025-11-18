@@ -4,8 +4,10 @@
 		<view class="status-bar" :style="{ paddingTop: statusBarHeight + 'px' }">
 			<view class="header">
 				<text class="app-title">GoChat</text>
-				<view class="user-avatar" @click="goToProfile">
-					<image :src="userInfo.avatar || '/static/logo.png'" class="avatar-img"></image>
+				<view class="header-right">
+					<view class="plus-btn" @click="openFriendSelector">
+						<uni-icons type="plusempty" size="24" color="#fff"></uni-icons>
+					</view>
 				</view>
 			</view>
 		</view>
@@ -41,6 +43,53 @@
 				<text class="tab-text">{{ tab.name }}</text>
 			</view>
 		</view>
+
+		<!-- 发起群聊好友选择 -->
+		<view v-if="showFriendSelector" class="friend-selector-overlay">
+			<view class="friend-selector-panel">
+				<view class="panel-header">
+					<text class="panel-title">发起群聊</text>
+					<text class="panel-close" @click="closeFriendSelector">×</text>
+				</view>
+				<view class="panel-body">
+					<scroll-view scroll-y class="friend-scroll">
+						<view v-if="isFriendLoading" class="loading-text">加载好友中...</view>
+						<view 
+							v-for="friend in friendList" 
+							:key="getFriendId(friend)"
+							class="selector-item"
+							@click="toggleFriend(friend)"
+						>
+							<image :src="getFriendAvatar(friend)" class="selector-avatar"></image>
+							<view class="selector-info">
+								<text class="selector-name">{{ getFriendName(friend) }}</text>
+								<text v-if="friend.phone" class="selector-desc">{{ friend.phone }}</text>
+							</view>
+							<view class="selector-check" :class="{ selected: isFriendSelected(friend) }">
+								<uni-icons 
+									v-if="isFriendSelected(friend)" 
+									type="checkmarkempty" 
+									size="20" 
+									color="#fff"
+								></uni-icons>
+							</view>
+						</view>
+						<view v-if="!isFriendLoading && friendList.length === 0" class="empty-text">
+							暂无好友，请先添加好友
+						</view>
+					</scroll-view>
+				</view>
+				<view class="panel-footer">
+					<button 
+						class="confirm-btn" 
+						:class="{ disabled: selectedFriendIds.length === 0 }"
+						@click="confirmStartGroup"
+					>
+						开始群聊 <text v-if="selectedFriendIds.length">({{ selectedFriendIds.length }})</text>
+					</button>
+				</view>
+			</view>
+		</view>
 	</view>
 </template>
 
@@ -60,6 +109,10 @@ export default {
 			currentTab: 0,
 			statusBarHeight: 0,
 			userInfo: {},
+			showFriendSelector: false,
+			friendList: [],
+			isFriendLoading: false,
+			selectedFriendIds: [],
 			tabs: [
 				{ name: '聊天', icon: 'chat' },
 				{ name: '通讯录', icon: 'contact' },
@@ -81,6 +134,7 @@ export default {
 	onShow() {
 		// 每次显示时重新加载用户信息
 		this.loadUserInfo()
+		this.refreshCurrentTab()
 	},
 	methods: {
 		// 加载用户信息
@@ -113,48 +167,123 @@ export default {
 		switchTab(index) {
 			console.log('Main: 切换到tab', index)
 			this.currentTab = index
-			
-			// 当切换到聊天时，触发数据加载
-			if (index === 0) {
-				this.$nextTick(() => {
-					if (this.$refs.chatTab) {
-						this.$refs.chatTab.loadChats()
-					}
-				})
-			}
-			
-			// 当切换到通讯录时，触发数据加载
-			if (index === 1) {
-				console.log('Main: 切换到通讯录，准备加载数据')
-				this.$nextTick(() => {
-					if (this.$refs.contactTab) {
-						console.log('Main: 调用ContactTab的loadFriends方法')
-						this.$refs.contactTab.loadFriends()
-						this.$refs.contactTab.loadUnreadRequests()
-					} else {
-						console.log('Main: ContactTab ref不存在')
-					}
-				})
-			}
-			
-			// 当切换到"我"页面时，触发数据加载
-			if (index === 2) {
-				console.log('Main: 切换到"我"页面，准备加载数据')
-				this.$nextTick(() => {
-					if (this.$refs.profileTab) {
-						console.log('Main: 调用ProfileTab的loadUserInfo方法')
-						this.$refs.profileTab.loadUserInfo()
-					} else {
-						console.log('Main: ProfileTab ref不存在')
-					}
-				})
-			}
+			this.refreshCurrentTab()
+		},
+		
+		refreshCurrentTab() {
+			this.$nextTick(() => {
+				if (this.currentTab === 0 && this.$refs.chatTab) {
+					this.$refs.chatTab.loadChats()
+				}
+				if (this.currentTab === 1 && this.$refs.contactTab) {
+					this.$refs.contactTab.loadFriends()
+					this.$refs.contactTab.loadUnreadRequests()
+				}
+				if (this.currentTab === 2 && this.$refs.profileTab) {
+					this.$refs.profileTab.loadUserInfo()
+				}
+			})
 		},
 		
 		// 跳转到个人中心
 		goToProfile() {
 			this.currentTab = 2
-		}
+			},
+
+			async openFriendSelector() {
+				this.showFriendSelector = true
+				if (this.friendList.length === 0 && !this.isFriendLoading) {
+					await this.loadFriendList()
+				}
+			},
+
+			async loadFriendList() {
+				this.isFriendLoading = true
+				try {
+					const friendApi = await import('@/api/friend.js')
+					const response = await friendApi.default.getFriendList(1, 200)
+					if (response.success && response.data && response.data.friends) {
+						this.friendList = response.data.friends
+					} else {
+						this.friendList = []
+					}
+				} catch (error) {
+					console.error('加载好友列表失败:', error)
+					uni.showToast({
+						title: '加载好友失败',
+						icon: 'none'
+					})
+				} finally {
+					this.isFriendLoading = false
+				}
+			},
+
+			closeFriendSelector() {
+				this.showFriendSelector = false
+				this.selectedFriendIds = []
+			},
+
+			getFriendId(friend) {
+				return Number(friend.id || friend.friend_id || friend.user_id || 0)
+			},
+
+			getFriendName(friend) {
+				return friend.remark || friend.name || friend.friend_name || '好友'
+			},
+
+			getFriendAvatar(friend) {
+				const avatar = friend.avatar || friend.friend_avatar || ''
+				if (!avatar) {
+					return '/static/logo.png'
+				}
+				if (avatar.startsWith('http')) {
+					return avatar
+				}
+				return avatar
+			},
+
+			isFriendSelected(friend) {
+				const friendId = this.getFriendId(friend)
+				return this.selectedFriendIds.includes(friendId)
+			},
+
+			toggleFriend(friend) {
+				const friendId = this.getFriendId(friend)
+				if (!friendId) {
+					return
+				}
+				const index = this.selectedFriendIds.indexOf(friendId)
+				if (index >= 0) {
+					this.selectedFriendIds.splice(index, 1)
+				} else {
+					this.selectedFriendIds.push(friendId)
+				}
+			},
+
+			confirmStartGroup() {
+				if (this.selectedFriendIds.length === 0) {
+					uni.showToast({
+						title: '请至少选择一位好友',
+						icon: 'none'
+					})
+					return
+				}
+
+				const selectedMembers = this.friendList
+					.filter(friend => this.selectedFriendIds.includes(this.getFriendId(friend)))
+					.map(friend => ({
+						id: this.getFriendId(friend),
+						name: this.getFriendName(friend),
+						avatar: this.getFriendAvatar(friend)
+					}))
+
+				uni.setStorageSync('prefillGroupMembers', selectedMembers)
+				this.closeFriendSelector()
+
+				uni.navigateTo({
+					url: '/pages/group/create-group'
+				})
+			}
 	}
 }
 </script>
@@ -205,12 +334,20 @@ export default {
 	z-index: -1;
 }
 
-.user-avatar {
+.header-right {
+	display: flex;
+	align-items: center;
+	gap: 20rpx;
+}
+
+.plus-btn {
 	width: 60rpx;
 	height: 60rpx;
 	border-radius: 50%;
-	overflow: hidden;
-	border: 2rpx solid rgba(255, 255, 255, 0.3);
+	border: 1rpx solid rgba(255, 255, 255, 0.4);
+	display: flex;
+	align-items: center;
+	justify-content: center;
 }
 
 .avatar-img {
@@ -274,5 +411,124 @@ export default {
 .tab-item.active .tab-text {
 	color: #07c160;
 	font-weight: 500;
+}
+
+.friend-selector-overlay {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+	z-index: 999;
+}
+
+.friend-selector-panel {
+	width: 100%;
+	max-height: 80%;
+	background: #fff;
+	border-top-left-radius: 30rpx;
+	border-top-right-radius: 30rpx;
+	display: flex;
+	flex-direction: column;
+}
+
+.panel-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	padding: 30rpx;
+	border-bottom: 1rpx solid #f0f0f0;
+}
+
+.panel-title {
+	font-size: 32rpx;
+	font-weight: bold;
+}
+
+.panel-close {
+	font-size: 40rpx;
+	color: #999;
+}
+
+.panel-body {
+	flex: 1;
+}
+
+.friend-scroll {
+	max-height: 100%;
+}
+
+.selector-item {
+	display: flex;
+	align-items: center;
+	padding: 24rpx 30rpx;
+	border-bottom: 1rpx solid #f5f5f5;
+}
+
+.selector-avatar {
+	width: 80rpx;
+	height: 80rpx;
+	border-radius: 50%;
+	margin-right: 20rpx;
+	background: #f5f5f5;
+}
+
+.selector-info {
+	flex: 1;
+}
+
+.selector-name {
+	font-size: 32rpx;
+	color: #333;
+}
+
+.selector-desc {
+	font-size: 24rpx;
+	color: #999;
+}
+
+.selector-check {
+	width: 40rpx;
+	height: 40rpx;
+	border-radius: 50%;
+	border: 2rpx solid #ccc;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.selector-check.selected {
+	background: #07c160;
+	border-color: #07c160;
+}
+
+.panel-footer {
+	padding: 20rpx 30rpx 40rpx;
+}
+
+.confirm-btn {
+	width: 100%;
+	height: 90rpx;
+	background: #07c160;
+	color: white;
+	border-radius: 45rpx;
+	font-size: 32rpx;
+	border: none;
+}
+
+.confirm-btn.disabled {
+	background: #ccc;
+}
+
+.loading-text,
+.empty-text {
+	text-align: center;
+	padding: 40rpx;
+	color: #999;
+	font-size: 28rpx;
 }
 </style>

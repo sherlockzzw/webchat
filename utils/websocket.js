@@ -4,8 +4,14 @@ class WebSocketManager {
 		this.ws = null
 		this.reconnectTimer = null
 		this.heartbeatTimer = null
-		this.reconnectInterval = 3000 // 3秒重连间隔
+		this.heartbeatTimeoutTimer = null
+		this.reconnectInterval = 3000 // 初始重连间隔：3秒
+		this.maxReconnectInterval = 30000 // 最大重连间隔：30秒
+		this.reconnectAttempts = 0 // 重连尝试次数
+		this.maxReconnectAttempts = 10 // 最大重连次数，0表示无限制
 		this.heartbeatInterval = 30000 // 30秒心跳间隔
+		this.heartbeatTimeout = 60000 // 心跳超时：60秒（2次心跳间隔）
+		this.lastPongTime = null // 最后一次收到pong的时间
 		this.messageHandlers = new Map()
 		this.isConnecting = false
 		this.shouldReconnect = true
@@ -38,6 +44,9 @@ class WebSocketManager {
 				console.log('WebSocket: 当前连接状态', this.ws.readyState)
 				console.log('WebSocket: 已注册的处理器', Array.from(this.messageHandlers.keys()))
 				this.isConnecting = false
+				this.reconnectAttempts = 0 // 重置重连次数
+				this.reconnectInterval = 3000 // 重置重连间隔
+				this.lastPongTime = Date.now() // 记录连接时间
 				this.startHeartbeat()
 				this.emit('connected')
 			}
@@ -85,6 +94,13 @@ class WebSocketManager {
 		console.log('WebSocket handleMessage: 消息内容', JSON.stringify(message, null, 2))
 
 		const { type, data } = message || {}
+
+		// 处理心跳响应
+		if (type === 'pong') {
+			this.lastPongTime = Date.now()
+			console.log('WebSocket: 收到pong响应')
+			return
+		}
 
 		console.log('WebSocket handleMessage: 提取的type', type)
 		console.log('WebSocket handleMessage: 提取的data', data)
@@ -143,11 +159,23 @@ class WebSocketManager {
 	// 启动心跳
 	startHeartbeat() {
 		this.stopHeartbeat()
+		
+		// 发送ping
 		this.heartbeatTimer = setInterval(() => {
 			if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 				this.send({ type: 'ping' })
 			}
 		}, this.heartbeatInterval)
+
+		// 检测心跳超时
+		this.heartbeatTimeoutTimer = setInterval(() => {
+			if (this.lastPongTime && Date.now() - this.lastPongTime > this.heartbeatTimeout) {
+				console.warn('WebSocket: 心跳超时，主动断开连接')
+				if (this.ws) {
+					this.ws.close()
+				}
+			}
+		}, this.heartbeatTimeout / 2) // 每半个超时时间检查一次
 	}
 
 	// 停止心跳
@@ -156,19 +184,42 @@ class WebSocketManager {
 			clearInterval(this.heartbeatTimer)
 			this.heartbeatTimer = null
 		}
+		if (this.heartbeatTimeoutTimer) {
+			clearInterval(this.heartbeatTimeoutTimer)
+			this.heartbeatTimeoutTimer = null
+		}
 	}
 
-	// 安排重连
+	// 安排重连（指数退避策略）
 	scheduleReconnect(token) {
 		if (this.reconnectTimer) {
 			return
 		}
 
+		// 检查是否超过最大重连次数
+		if (this.maxReconnectAttempts > 0 && this.reconnectAttempts >= this.maxReconnectAttempts) {
+			console.error(`WebSocket: 已达到最大重连次数 ${this.maxReconnectAttempts}，停止重连`)
+			this.emit('reconnect_failed', {
+				attempts: this.reconnectAttempts,
+				maxAttempts: this.maxReconnectAttempts
+			})
+			return
+		}
+
+		// 指数退避：每次重连间隔递增，但不超过最大值
+		const delay = Math.min(
+			this.reconnectInterval * Math.pow(2, this.reconnectAttempts),
+			this.maxReconnectInterval
+		)
+
+		this.reconnectAttempts++
+		console.log(`WebSocket: 将在 ${delay}ms 后尝试第 ${this.reconnectAttempts} 次重连`)
+
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null
-			console.log('WebSocket: 尝试重连...')
+			console.log(`WebSocket: 尝试第 ${this.reconnectAttempts} 次重连...`)
 			this.connect(token)
-		}, this.reconnectInterval)
+		}, delay)
 	}
 
 	// 断开连接

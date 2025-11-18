@@ -99,26 +99,25 @@ export default {
 			try {
 				const friendApi = await import('@/api/friend.js')
 				const chatApi = await import('@/api/chat.js')
+				const groupApi = await import('@/api/group.js')
 
 				// 获取好友列表
 				const friendResponse = await friendApi.default.getFriendList(1, 100)
-				if (!friendResponse.success || !friendResponse.data || !friendResponse.data.friends) {
-					this.chats = []
-					this.isLoading = false
-					return
-				}
+				const friends = friendResponse.success && friendResponse.data ? (friendResponse.data.friends || []) : []
 
-				const friends = friendResponse.data.friends || []
+				// 获取群组列表
+				const groupResponse = await groupApi.default.getUserGroups()
+				const groups = groupResponse.success && groupResponse.data ? (groupResponse.data.groups || []) : []
 
 				// 获取未读消息数量
 				const unreadResponse = await chatApi.default.getUnreadCount()
 				const unreadByUser = unreadResponse.success && unreadResponse.data ? (unreadResponse.data.unread_by_user || {}) : {}
 
 				// 为每个好友获取最后一条消息
-				const chatPromises = friends.map(async (friend) => {
+				const friendChatPromises = friends.map(async (friend) => {
 					const friendId = friend.id || friend.friend_id
 					try {
-						const historyResponse = await chatApi.default.getMessageHistory(friendId, 1, 1)
+						const historyResponse = await chatApi.default.getMessageHistory({ otherUserId: friendId, page: 1, pageSize: 1 })
 						let lastMessage = ''
 						let lastMessageTime = Date.now()
 
@@ -133,6 +132,7 @@ export default {
 
 						return {
 							id: friendId,
+							type: 'private', // 私聊
 							name: friend.remark || friend.name || '未知',
 							avatar: friend.avatar || friend.friend_avatar || '/static/default-avatar.png',
 							lastMessage: lastMessage,
@@ -143,6 +143,7 @@ export default {
 						console.error(`获取好友 ${friendId} 的消息历史失败:`, error)
 						return {
 							id: friendId,
+							type: 'private',
 							name: friend.remark || friend.name || '未知',
 							avatar: friend.avatar || friend.friend_avatar || '/static/default-avatar.png',
 							lastMessage: '',
@@ -152,9 +153,53 @@ export default {
 					}
 				})
 
-				const chatList = await Promise.all(chatPromises)
-				chatList.sort((a, b) => b.lastMessageTime - a.lastMessageTime)
-				this.chats = chatList
+				// 为每个群组获取最后一条消息
+				const groupChatPromises = groups.map(async (group) => {
+					const groupId = group.id || group.group_id
+					try {
+						const historyResponse = await chatApi.default.getMessageHistory({ groupId: groupId, page: 1, pageSize: 1 })
+						let lastMessage = ''
+						let lastMessageTime = Date.now()
+
+						if (historyResponse.success && historyResponse.data) {
+							const messages = historyResponse.data.messages || historyResponse.data.Messages || []
+							if (messages.length > 0) {
+								const msg = messages[messages.length - 1]
+								lastMessage = msg.content || ''
+								lastMessageTime = this.normalizeTimestamp(msg.created_at)
+							}
+						}
+
+						return {
+							id: groupId,
+							type: 'group', // 群聊
+							name: group.name || '未知群组',
+							avatar: group.avatar || '/static/default-avatar.png',
+							lastMessage: lastMessage,
+							lastMessageTime: lastMessageTime,
+							unreadCount: 0, // 群聊未读数量暂时设为0
+							memberCount: group.member_count || 0
+						}
+					} catch (error) {
+						console.error(`获取群组 ${groupId} 的消息历史失败:`, error)
+						return {
+							id: groupId,
+							type: 'group',
+							name: group.name || '未知群组',
+							avatar: group.avatar || '/static/default-avatar.png',
+							lastMessage: '',
+							lastMessageTime: Date.now(),
+							unreadCount: 0,
+							memberCount: group.member_count || 0
+						}
+					}
+				})
+
+				const friendChatList = await Promise.all(friendChatPromises)
+				const groupChatList = await Promise.all(groupChatPromises)
+				const allChats = [...friendChatList, ...groupChatList]
+				allChats.sort((a, b) => b.lastMessageTime - a.lastMessageTime)
+				this.chats = allChats
 			} catch (error) {
 				console.error('加载聊天列表失败:', error)
 				uni.showToast({
@@ -179,12 +224,24 @@ export default {
 			const currentUserId = Number(userInfo.id)
 			const fromUserId = Number(data.from_user_id ?? data.fromUserId)
 			const toUserId = Number(data.to_user_id ?? data.toUserId)
+			const groupId = Number(data.group_id ?? data.groupId)
 
-			// 判断是否是发给当前用户的消息
-			if (toUserId === currentUserId) {
-				// 找到对应的聊天项并更新
+			// 判断是群聊还是私聊
+			if (groupId && groupId > 0) {
+				// 群聊消息：找到对应的群组并更新
+				const chatIndex = this.chats.findIndex(chat => chat.type === 'group' && Number(chat.id) === groupId)
+				if (chatIndex >= 0) {
+					this.chats[chatIndex].lastMessage = data.content || ''
+					this.chats[chatIndex].lastMessageTime = this.normalizeTimestamp(data.created_at)
+					this.chats.sort((a, b) => b.lastMessageTime - a.lastMessageTime)
+				} else {
+					// 如果是新群组，重新加载列表
+					this.loadChats()
+				}
+			} else if (toUserId === currentUserId) {
+				// 私聊消息：判断是否是发给当前用户的消息
 				const friendId = fromUserId
-				const chatIndex = this.chats.findIndex(chat => Number(chat.id) === friendId)
+				const chatIndex = this.chats.findIndex(chat => chat.type === 'private' && Number(chat.id) === friendId)
 
 				if (chatIndex >= 0) {
 					// 更新最后一条消息
@@ -204,12 +261,20 @@ export default {
 		onSearch() {
 			// 搜索功能
 		},
-		
+
 		openChat(chat) {
 			// 跳转到聊天详情页
-			uni.navigateTo({
-				url: `/pages/chat/chat-detail?friendId=${chat.id}&friendName=${chat.name}`
-			})
+			if (chat.type === 'group') {
+				// 群聊
+				uni.navigateTo({
+					url: `/pages/chat/chat-detail?groupId=${chat.id}&groupName=${chat.name}`
+				})
+			} else {
+				// 私聊
+				uni.navigateTo({
+					url: `/pages/chat/chat-detail?friendId=${chat.id}&friendName=${chat.name}`
+				})
+			}
 		},
 		
 		formatTime(timestamp) {
@@ -244,9 +309,13 @@ export default {
 	padding: 20rpx;
 	background: white;
 	border-bottom: 1rpx solid #eee;
+	display: flex;
+	align-items: center;
+	gap: 20rpx;
 }
 
 .search-input {
+	flex: 1;
 	display: flex;
 	align-items: center;
 	background: #f8f8f8;

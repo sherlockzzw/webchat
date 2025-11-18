@@ -190,10 +190,8 @@ export default {
 		},
 		
 		groupChat() {
-			// 群聊功能（暂时显示提示）
-			uni.showToast({
-				title: '群聊功能开发中',
-				icon: 'none'
+			uni.navigateTo({
+				url: '/pages/group/group-list'
 			})
 		},
 		

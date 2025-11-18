@@ -20,6 +20,14 @@ export const API_CONFIG = {
     UNREAD_COUNT: '/api/chat/message/unread',
     UPLOAD_FILE: '/api/chat/upload',
     
+    // 群组相关
+    CREATE_GROUP: '/api/group/create',
+    GROUP_INFO: '/api/group/info',
+    USER_GROUPS: '/api/group/list',
+    ADD_GROUP_MEMBERS: '/api/group/members/add',
+    REMOVE_GROUP_MEMBER: '/api/group/members/remove',
+    CHECK_MEMBER_IN_GROUP: '/api/group/members/check',
+    
     // WebSocket
     WS_CONNECT: '/ws/connect',
     WS_ONLINE: '/ws/online',

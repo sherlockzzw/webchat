@@ -20,7 +20,11 @@
 			>
 				<!-- 对方消息：头像在左边 -->
 				<view class="message-avatar" v-if="!(message.is_self || (message.from_user_id && Number(message.from_user_id) === Number(userInfo.id)))">
-					<image :src="getAvatarUrl(friendInfo.avatar)" class="avatar-img" @error="handleAvatarError"></image>
+					<image 
+						:src="isGroup ? getAvatarUrl(message.sender_avatar || groupMembers[message.from_user_id]?.avatar || '') : getAvatarUrl(friendInfo.avatar)" 
+						class="avatar-img" 
+						@error="handleAvatarError"
+					></image>
 				</view>
 
 				<!-- 自己消息：头像在右边（通过 row-reverse 实现） -->
@@ -29,6 +33,8 @@
 				</view>
 
 				<view class="message-content">
+					<!-- 群聊显示发送者名称 -->
+					<text v-if="isGroup && !message.is_self && message.sender_name" class="sender-name">{{ message.sender_name }}</text>
 					<view class="message-bubble" :class="getMessageBubbleClass(message)">
 						<!-- 文本消息 -->
 						<text v-if="message.message_type === 0 || !message.message_type" class="message-text">{{ message.content || '' }}</text>
@@ -121,7 +127,11 @@ export default {
 		return {
 			friendId: '',
 			friendName: '',
+			groupId: '',
+			groupName: '',
+			isGroup: false, // 是否是群聊
 			friendInfo: {},
+			groupInfo: {},
 			userInfo: {},
 			messages: [],
 			inputMessage: '',
@@ -129,27 +139,40 @@ export default {
 			scrollTop: 0,
 			isLoadingFriend: false,
 			scrollTimer: null,
-			isScrolling: false
+			isScrolling: false,
+			groupMembers: {} // 群成员信息映射，用于显示发送者名称
 		}
 	},
-	onLoad(options) {
-		// 兼容不同参数名称
-		this.friendId = options.friendId || options.chatId
-		this.friendName = options.friendName || options.name
-
-		uni.setNavigationBarTitle({
-			title: this.friendName || '聊天'
-		})
+	async onLoad(options) {
+		// 判断是群聊还是私聊
+		if (options.groupId) {
+			// 群聊
+			this.groupId = options.groupId
+			this.groupName = options.groupName || '群聊'
+			this.isGroup = true
+			uni.setNavigationBarTitle({
+				title: this.groupName
+			})
+		} else {
+			// 私聊
+			this.friendId = options.friendId || options.chatId
+			this.friendName = options.friendName || options.name
+			this.isGroup = false
+			uni.setNavigationBarTitle({
+				title: this.friendName || '聊天'
+			})
+		}
 
 		// 从本地存储加载用户信息
 		this.userInfo = uni.getStorageSync('userInfo') || {}
 		
-		// 如果用户信息不完整，尝试从服务器获取
-		if (!this.userInfo.id || !this.userInfo.avatar) {
-			this.refreshUserInfo()
-		}
+		await this.ensureUserInfoReady()
 
-		this.loadFriendInfo()
+		if (this.isGroup) {
+			this.loadGroupInfo()
+		} else {
+			this.loadFriendInfo()
+		}
 		this.loadMessages()
 		this.setupWebSocketListener()
 	},
@@ -218,10 +241,67 @@ export default {
 			}
 		},
 
+		async loadGroupInfo() {
+			try {
+				const groupApi = await import('@/api/group.js')
+				const response = await groupApi.default.getGroupInfo(this.groupId)
+				if (response.success && response.data) {
+					this.groupInfo = response.data.group || {}
+					// 构建群成员映射，用于显示发送者名称
+					if (response.data.members) {
+						response.data.members.forEach(member => {
+							this.groupMembers[member.user_id] = {
+								name: member.nickname || member.user_name || '未知',
+								avatar: member.user_avatar || ''
+							}
+						})
+					}
+					if (this.groupInfo.name) {
+						uni.setNavigationBarTitle({
+							title: this.groupInfo.name
+						})
+					}
+				}
+			} catch (error) {
+				console.error('加载群组信息失败:', error)
+			}
+		},
+
+		async ensureUserInfoReady(force = false) {
+			let userInfo = this.userInfo
+			if (!force && userInfo && userInfo.id) {
+				return userInfo
+			}
+
+			const stored = uni.getStorageSync('userInfo')
+			if (!force && stored && stored.id) {
+				this.userInfo = stored
+				return stored
+			}
+
+			try {
+				const userApi = await import('@/api/user.js')
+				const response = await userApi.default.getUserInfo()
+				if (response.success && response.data && response.data.user) {
+					uni.setStorageSync('userInfo', response.data.user)
+					this.userInfo = response.data.user
+					return response.data.user
+				}
+			} catch (error) {
+				console.error('ensureUserInfoReady: 获取用户信息失败', error)
+			}
+			return null
+		},
+
 		async loadMessages() {
 			try {
+				await this.ensureUserInfoReady()
 				const chatApi = await import('@/api/chat.js')
-				const response = await chatApi.default.getMessageHistory(this.friendId)
+				// 根据是群聊还是私聊调用不同的参数
+				const params = this.isGroup 
+					? { groupId: this.groupId, page: 1, pageSize: 50 }
+					: { otherUserId: this.friendId, page: 1, pageSize: 50 }
+				const response = await chatApi.default.getMessageHistory(params)
 
 				if (response.success) {
 					let messages = []
@@ -246,12 +326,28 @@ export default {
 						const fromUserId = Number(msg.from_user_id || msg.fromUserId || msg.FromUserId || 0)
 						const currentUserId = Number(this.userInfo.id || 0)
 						
+						// 群聊需要获取发送者信息
+						let senderName = ''
+						let senderAvatar = ''
+						if (this.isGroup && fromUserId !== currentUserId) {
+							const sender = this.groupMembers[fromUserId]
+							if (sender) {
+								senderName = sender.name
+								senderAvatar = sender.avatar
+							} else {
+								senderName = '未知'
+							}
+						}
+						
 						return {
 							...msg,
 							id: msg.id || msg.message_id || Date.now(),
 							from_user_id: fromUserId,
 							to_user_id: Number(msg.to_user_id || msg.toUserId || msg.ToUserId || 0),
+							group_id: Number(msg.group_id || msg.groupId || 0),
 							message_type: msg.message_type || msg.messageType || msg.MessageType || 0,
+							sender_name: senderName,
+							sender_avatar: senderAvatar,
 							content: msg.content || msg.Content || '',
 							file_url: msg.file_url || msg.fileUrl || msg.FileUrl || '',
 							file_name: msg.file_name || msg.fileName || msg.FileName || '',
@@ -295,7 +391,7 @@ export default {
 			console.log('WebSocket监听器已注册')
 		},
 
-		handleWebSocketMessage(data) {
+		async handleWebSocketMessage(data) {
 			console.log('chat-detail.vue: 收到WebSocket消息', data)
 			
 			// 确保用户信息存在，如果不存在则从本地存储重新加载
@@ -307,38 +403,67 @@ export default {
 					this.userInfo = userInfo
 					console.log('chat-detail.vue: 用户信息已从本地存储加载', userInfo)
 				} else {
-					console.log('chat-detail.vue: 本地存储中也没有用户信息，忽略消息')
-					return
+					console.log('chat-detail.vue: 本地存储中也没有用户信息，尝试从服务器获取')
+					try {
+						const userApi = await import('@/api/user.js')
+						const response = await userApi.default.getUserInfo()
+						if (response.success && response.data && response.data.user) {
+							userInfo = response.data.user
+							this.userInfo = userInfo
+							uni.setStorageSync('userInfo', userInfo)
+							console.log('chat-detail.vue: 通过接口获取用户信息成功', userInfo)
+						} else {
+							console.log('chat-detail.vue: 无法获取用户信息，忽略消息')
+							return
+						}
+					} catch (error) {
+						console.error('chat-detail.vue: 获取用户信息失败', error)
+						return
+					}
 				}
 			}
 
 			const currentUserId = Number(userInfo.id || this.userInfo.id || 0)
-			const currentFriendId = Number(this.friendId || 0)
 			const fromUserId = Number(data.from_user_id ?? data.fromUserId ?? 0)
 			const toUserId = Number(data.to_user_id ?? data.toUserId ?? 0)
+			const groupId = Number(data.group_id ?? data.groupId ?? 0)
 			
-			// 如果用户ID仍然无效，忽略消息
-			if (!currentUserId || !currentFriendId) {
-				console.log('chat-detail.vue: 用户ID或好友ID无效，忽略消息', {
-					currentUserId,
-					currentFriendId
-				})
-				return
-			}
+			// 判断是群聊还是私聊
+			if (this.isGroup) {
+				// 群聊：检查是否是当前群组的消息
+				const currentGroupId = Number(this.groupId || 0)
+				if (!currentUserId || !currentGroupId || groupId !== currentGroupId) {
+					console.log('chat-detail.vue: 群聊消息不匹配，忽略', {
+						currentUserId,
+						currentGroupId,
+						groupId
+					})
+					return
+				}
+				
+				// 如果是新成员发送的消息，更新群成员映射
+				if (fromUserId !== currentUserId && !this.groupMembers[fromUserId]) {
+					// 重新加载群组信息以获取新成员
+					this.loadGroupInfo()
+				}
+			} else {
+				// 私聊：检查是否是当前好友的消息
+				const currentFriendId = Number(this.friendId || 0)
+				if (!currentUserId || !currentFriendId) {
+					console.log('chat-detail.vue: 用户ID或好友ID无效，忽略消息', {
+						currentUserId,
+						currentFriendId
+					})
+					return
+				}
 
-			console.log('chat-detail.vue: 消息匹配检查', {
-				currentUserId,
-				currentFriendId,
-				fromUserId,
-				toUserId
-			})
+				const isFromFriend = fromUserId === currentFriendId && toUserId === currentUserId
+				const isToFriend = fromUserId === currentUserId && toUserId === currentFriendId
 
-			const isFromFriend = fromUserId === currentFriendId && toUserId === currentUserId
-			const isToFriend = fromUserId === currentUserId && toUserId === currentFriendId
-
-			if (!(isFromFriend || isToFriend)) {
-				console.log('chat-detail.vue: 消息不匹配当前聊天，忽略')
-				return
+				if (!(isFromFriend || isToFriend)) {
+					console.log('chat-detail.vue: 消息不匹配当前聊天，忽略')
+					return
+				}
 			}
 
 			console.log('chat-detail.vue: 消息匹配，开始处理')
@@ -346,17 +471,26 @@ export default {
 			const createdAt = this.normalizeTimestamp(data.created_at)
 			const messageId = data.id || data.message_id || String(Date.now())
 
+			// 群聊需要获取发送者名称
+			let senderName = ''
+			if (this.isGroup && fromUserId !== currentUserId) {
+				const sender = this.groupMembers[fromUserId]
+				senderName = sender ? sender.name : '未知'
+			}
+
 			const message = {
 				...data,
 				id: messageId,
 				from_user_id: fromUserId,
 				to_user_id: toUserId,
+				group_id: groupId,
 				message_type: data.message_type || data.messageType || 0,
 				content: data.content || '',
 				file_url: data.file_url || data.fileUrl || '',
 				file_name: data.file_name || data.fileName || '',
 				file_size: data.file_size || data.fileSize || 0,
 				is_self: fromUserId === currentUserId,
+				sender_name: senderName, // 群聊发送者名称
 				created_at: createdAt,
 				status: 'sent'
 			}
@@ -372,16 +506,23 @@ export default {
 				// 如果消息已存在，更新它（可能是临时消息被替换）
 				console.log('更新已存在的消息，索引:', existingIndex)
 				this.messages[existingIndex] = message
-			} else {
-				// 如果是自己发送的消息，检查是否有临时消息需要替换（通过内容和时间匹配）
-				if (fromUserId === currentUserId) {
-					const tempIndex = this.messages.findIndex(m => {
-						// 查找发送中的临时消息，且内容匹配
-						return m.status === 'sending' && 
-						       m.content === message.content &&
-						       m.from_user_id === currentUserId &&
-						       m.to_user_id === currentFriendId
-					})
+				} else {
+					// 如果是自己发送的消息，检查是否有临时消息需要替换（通过内容和时间匹配）
+					if (fromUserId === currentUserId) {
+						const tempIndex = this.messages.findIndex(m => {
+							// 查找发送中的临时消息，且内容匹配
+							if (this.isGroup) {
+								return m.status === 'sending' && 
+								       m.content === message.content &&
+								       m.from_user_id === currentUserId &&
+								       m.group_id === Number(this.groupId)
+							} else {
+								return m.status === 'sending' && 
+								       m.content === message.content &&
+								       m.from_user_id === currentUserId &&
+								       m.to_user_id === Number(this.friendId)
+							}
+						})
 					
 					if (tempIndex >= 0) {
 						// 用真实消息替换临时消息
@@ -409,6 +550,7 @@ export default {
 		},
 
 		async sendMessage() {
+			await this.ensureUserInfoReady()
 			if (!this.inputMessage.trim()) return
 
 			const messageContent = this.inputMessage.trim()
@@ -420,7 +562,8 @@ export default {
 				content: messageContent,
 				is_self: true,
 				from_user_id: Number(this.userInfo.id),
-				to_user_id: Number(this.friendId),
+				to_user_id: this.isGroup ? 0 : Number(this.friendId),
+				group_id: this.isGroup ? Number(this.groupId) : 0,
 				created_at: Date.now(),
 				status: 'sending',
 				message_type: 0
@@ -437,11 +580,19 @@ export default {
 
 			try {
 				const chatApi = await import('@/api/chat.js')
-				const response = await chatApi.default.sendMessage({
-					toUserId: Number(this.friendId),
-					content: messageContent,
-					messageType: 0 // 文本消息类型
-				})
+				// 根据是群聊还是私聊构建不同的参数
+				const messageData = this.isGroup
+					? {
+						groupId: Number(this.groupId),
+						content: messageContent,
+						messageType: 0
+					}
+					: {
+						toUserId: Number(this.friendId),
+						content: messageContent,
+						messageType: 0
+					}
+				const response = await chatApi.default.sendMessage(messageData)
 
 				if (response.success) {
 					// 更新临时消息的ID，等待WebSocket消息到达后替换
@@ -475,8 +626,12 @@ export default {
 		},
 
 		showMoreActions() {
+			const actions = ['图片', '文件', '语音']
+			if (this.isGroup) {
+				actions.push('群成员')
+			}
 			uni.showActionSheet({
-				itemList: ['图片', '文件', '语音'],
+				itemList: actions,
 				success: (res) => {
 					if (res.tapIndex === 0) {
 						this.selectImage()
@@ -484,6 +639,11 @@ export default {
 						this.selectFile()
 					} else if (res.tapIndex === 2) {
 						this.startVoiceRecord()
+					} else if (res.tapIndex === 3 && this.isGroup) {
+						// 群成员管理
+						uni.navigateTo({
+							url: `/pages/group/group-members?groupId=${this.groupId}`
+						})
 					}
 				}
 			})
@@ -619,11 +779,19 @@ export default {
 				message.status = 'sending'
 				try {
 					const chatApi = await import('@/api/chat.js')
-					const response = await chatApi.default.sendMessage({
-						toUserId: Number(this.friendId),
-						content: message.content,
-						messageType: 0 // 文本消息类型
-					})
+					// 根据是群聊还是私聊构建不同的参数
+					const messageData = this.isGroup
+						? {
+							groupId: Number(this.groupId),
+							content: message.content,
+							messageType: 0
+						}
+						: {
+							toUserId: Number(this.friendId),
+							content: message.content,
+							messageType: 0
+						}
+					const response = await chatApi.default.sendMessage(messageData)
 					if (response.success) {
 						message.status = 'sent'
 						message.id = response.data.message?.id || response.data.id || message.id
@@ -769,6 +937,13 @@ export default {
 
 .message-item.is-self .message-content {
 	align-items: flex-end;
+}
+
+.sender-name {
+	font-size: 24rpx;
+	color: #999;
+	margin-bottom: 8rpx;
+	padding: 0 10rpx;
 }
 
 .message-bubble {
